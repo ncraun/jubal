@@ -1,0 +1,21 @@
+ABOUT:
+
+Jubal is a computer music application for Linux written in C and
+licensed under the GPLv3.  The Jubal engine will include a variety of
+synthesizers and effects combineable through a modular audio routing
+system, capable of outputting sound to backends of many platforms
+(currently only Linux is supported). The Jubal editing system will
+be based on a tracker style UI.  Jubal is still under development,
+and is not ready for end-user use... yet!
+
+INSTALL:
+
+To install, navigate to the src dir and run make. To use a
+different compiler or compiler options than the default, edit the
+Makefile. Eventually this will be replaced by a proper build system,
+or at least a more friendly Makefile.
+
+Jubal depends on the following libraries:
+    libjack
+
+Jubal is developed by Nate Craun.

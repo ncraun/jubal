@@ -1,0 +1,29 @@
+Add GUI drawing hints to AudioDefs
+Sequencer
+File Reader/Writer
+GUI
+Audio Nodes
+Engine
+    Change Buffer Size
+    Change Num Nodes
+	Add/Delete Nodes
+Memory Manager
+mlock()  The mlock and mlockall system calls tell the system to lock to a specified memory range, and to not allow that memory to be paged. This means that once the pysical page has been allocated to the page table entry, references to that page will not fault again.
+mlock is useful in realtime applications
+Investigate use of mlock() for Jubal. It would particularly be useful in the audio and node data buffers.
+
+REALLY check and think about how to improve lfqueue
+	* Avoid Compiler Optimizations removing atomicity
+	* Avoid Cache Contention b/w Threads
+	* Avoid Teared Reads/Writes
+
+Read/Write Patch format for instrument/fx presets
+
+Add Engine support for mute/solo voices
+Sort Engine struct entries to make better use of cache
+Support Undo/Redo
+Song/Track Editing functions
+	Stretch/Shrink
+	Transpose Notes
+	Change Track Target Assignment
+Test
