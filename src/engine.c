@@ -94,6 +94,12 @@ make_engine(int num_nodes, int buffer_size, int queue_size, int sample_rate)
     engine->rt.out_conn = malloc(BITSET_BYTES(num_nodes));
     memset(engine->rt.out_conn, 0, BITSET_BYTES(num_nodes));
 
+    engine->rt.mute = malloc(BITSET_BYTES(num_nodes));
+    memset(engine->rt.mute, 0, BITSET_BYTES(num_nodes));
+
+    engine->rt.solo = malloc(BITSET_BYTES(num_nodes));
+    memset(engine->rt.solo, 0, BITSET_BYTES(num_nodes));
+
     return engine;
 }
 

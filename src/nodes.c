@@ -24,7 +24,44 @@
 #include "const.h"
 #include "engine.h"
 
+#define NUM_VOICES 5
+
+/*
+    Voice Stealing:
+
+    Each node has a maximum polyphony, which is the number of different notes that can be
+    played simulatenously. The maximum polyphony is determined by the number of voices the
+    synth has. In a hardware synth, each voice would consist of dedicated circuitry, but
+    in Jubal, a voice is just a set of parameters unique to the sound generating process.
+    Certain parameters are shared across all voices (such as ADSR, waveform, etc). A voice
+    consists of a structure of parameters specific to that voice, such as current note,
+    current time in the cycle, etc.
+
+    When a note on (or note off) message is sent to a node there must be a policy
+    for which voice will be allocated to handle the new note.
+
+    Cometimes the node is asked to play more notes at the same time than it has voices
+    to play with. In this case, a common aproach is "voice stealing", where a previous
+    note will cut out, and that voice will be used to play the new note. There must be
+    a policy to govern this as well.
+
+    In Jubal, it is up to each node to implement this, but to help promote cohesiveness
+    the following governance policies are suggested:
+
+    TODO: determine policies
+*/
+
+struct sine_voice {
+    float freq;
+    float time;
+    bool on;
+};
+
 struct sine {
+    /* Voice stealing using array and index as a */
+    struct sine_voice voices[NUM_VOICES];
+    int voice_st;
+
     float freq;
     float time;
     bool on;
@@ -81,7 +118,7 @@ def_sine_eval(void *instance, float *left_input, float *right_input, float *left
 
         float v = 0.0;
         if (data->on) {
-            v = .1*sinf(2*PI*data->freq*data->time);
+            v = sinf(2*PI*data->freq*data->time);
             data->time += sample_time;
         }
 

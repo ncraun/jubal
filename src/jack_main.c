@@ -28,6 +28,7 @@
 #include <jack/jack.h>
 #include <pthread.h>
 #include "engine.h"
+#include "SDL.h"
 
 #define NON_RT_POLL_NS 500000000L
 
@@ -98,6 +99,13 @@ backend_jack_callback(jack_nframes_t nframes, void *arg)
     uint64_t samp_diff = (diff_sec*engine->rt.sample_rate) + (diff_nsec*engine->rt.sample_rate)/BILLION;
     
     jubal_callback(buff, nframes, engine, samp_diff);
+
+    // Make it quieter for stream
+    for (int i = 0; i < nframes; i++) {
+        l_out[i] *= .1f;
+        r_out[i] *= .1f;
+    }
+
     return 0;
 }
 int done = 0;
@@ -128,78 +136,84 @@ non_rt_func(void* param)
     return NULL;
 }
 
-static unsigned char
-key_to_note_base(int ch)
+static int
+sdl_key_to_note(int ch)
 {
-    int r;
     switch(ch) {
-        case 'z':
+        case SDLK_z:
             return 24;
-        case 's':
+        case SDLK_s:
             return 25;
-        case 'x':
+        case SDLK_x:
             return 26;
-        case 'd':
+        case SDLK_d:
             return 27;
-        case 'c':
+        case SDLK_c:
             return 28;
-        case 'v':
+        case SDLK_v:
             return 29;
-        case 'g':
+        case SDLK_g:
             return 30;
-        case 'b':
+        case SDLK_b:
             return 31;
-        case 'h':
+        case SDLK_h:
             return 32;
-        case 'n':
+        case SDLK_n:
             return 33;
-        case 'j':
+        case SDLK_j:
             return 34;
-        case 'm':
+        case SDLK_m:
             return 35;
-        case ',':
+        case SDLK_COMMA:
             return 36;
-        case 'q':
+        case SDLK_q:
             return 36;
-        case '2':
+        case SDLK_2:
             return 37;
-        case 'w':
+        case SDLK_w:
             return 38;
-        case '3':
+        case SDLK_3:
             return 39;
-        case 'e':
+        case SDLK_e:
             return 40;
-        case 'r':
+        case SDLK_r:
             return 41;
-        case '5':
+        case SDLK_5:
             return 42;
-        case 't':
+        case SDLK_t:
             return 43;
-        case '6':
+        case SDLK_6:
             return 44;
-        case 'y':
+        case SDLK_y:
             return 45;
-        case '7':
+        case SDLK_7:
             return 46;
-        case 'u':
+        case SDLK_u:
             return 47;
-        case 'i':
+        case SDLK_i:
             return 48;
-        case '9':
+        case SDLK_9:
             return 49;
-        case 'o':
+        case SDLK_o:
             return 50;
-        case '0':
+        case SDLK_0:
             return 51;
-        case 'p':
+        case SDLK_p:
             return 52;
     }
 
-    return 0;
+    return -1;
 }
+
 int
 main()
 {
+
+    SDL_Init(SDL_INIT_VIDEO);
+
+    SDL_Window *window;
+    SDL_Renderer *renderer;
+    SDL_CreateWindowAndRenderer(320, 240, 0, &window, &renderer);
 
     jack_client_t *client = jack_client_open("Jubal 0.0.1", JackNullOption, NULL);
     uint32_t sample_rate = jack_get_sample_rate(client);
@@ -242,6 +256,10 @@ main()
     jack_connect(client, jack_port_name(l_playback_port), ports[0]);
     jack_connect(client, jack_port_name(r_playback_port), ports[1]);
 
+    /* Auto route to OBS input for streaming. */
+    jack_connect(client, jack_port_name(l_playback_port), "JACK Input Client:in_1");
+    jack_connect(client, jack_port_name(r_playback_port), "JACK Input Client:in_2");
+
 
     /* Initiliaze sine node and connect to output */
     int sine_node = 5;
@@ -250,35 +268,37 @@ main()
     /*
         Live Play!
     */
-/*
-    engine_note_on(engine, sine_node, 60, 0);
-    sleep(1);
-    engine_note_on(engine, sine_node, 65, 0);
-    sleep(1);
-    engine_note_on(engine, sine_node, 72, 0);
-    sleep(1);
-*/
-    char ch = '\0';
 
-    struct timespec slptime;
-    slptime.tv_sec = 0;
-    slptime.tv_nsec =  125000000L;
-
-    int scale[] = {21, 23, 24, 26, 28, 29, 32};
-    int scale_len = sizeof(scale)/sizeof(int);
-
-    while (1) {
-        ch = mygetch();
-        int note = 36+key_to_note_base(ch);
-        // Make ch pentatonic
-        engine_note_on(engine, sine_node, note, 0);
-        nanosleep(&slptime, NULL);
-        engine_note_off(engine, sine_node, note, 0);
+    bool running = true;
+    int oct = 3;
+    SDL_Event e;
+    while (running) {
+        while (SDL_WaitEvent(&e)) {
+            if (e.type == SDL_QUIT) {
+                running = false;
+                break;
+            }
+            else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+                int note = sdl_key_to_note(e.key.keysym.sym);
+                if (note != -1) {
+                    engine_note_on(engine, sine_node, note+12*oct, 0);
+                    printf("Note On: %d\n", note);
+                }
+            }
+            else if (e.type == SDL_KEYUP && !e.key.repeat) {
+                int note = sdl_key_to_note(e.key.keysym.sym);
+                if (note != -1) {
+                    engine_note_off(engine, sine_node, note+12*oct, 0);
+                    printf("Note On: %d\n", note);
+                }
+            }
+        }
     }
 
     jack_deactivate(client);
     jack_client_close(client);
     __sync_add_and_fetch(&done, 1);
+    SDL_Quit();
     pthread_exit(NULL);
     return 0;
 }
