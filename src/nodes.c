@@ -54,26 +54,46 @@
 struct sine_voice {
     float freq;
     float time;
+    int note;
     bool on;
 };
 
 struct sine {
     /* Voice stealing using array and index as a */
     struct sine_voice voices[NUM_VOICES];
-    int voice_st;
-
-    float freq;
-    float time;
-    bool on;
+    /* Round robin voice stealing */
+    int voice_assign;
+    float vib_rate;
+    float vib_depth;
+    float trem_rate;
+    float trem_depth;
+    float atk_time;
+    float sus_level;
+    float rls_time;
+    float port_time;
+    float port_depth;
 };
 
 static void*
 def_sine_make()
 {
     struct sine *data = malloc(sizeof(struct sine));
-    data->freq = 0;
-    data->time = 0;
-    data->on = false;
+    for (int i = 0; i < NUM_VOICES; i++) {
+        data->voices[i].on = false;
+    }
+    data->voice_assign = 0;
+    data->vib_rate = 440.0f;
+    data->vib_depth = .1;
+    data->trem_rate = 440.0f;
+    data->trem_depth = .08;
+
+    data->atk_time = 0.1f;
+    data->sus_level = 1.0;
+    data->rls_time = .5;
+
+    data->port_time = .3f;
+    data->port_depth = 20.0f;
+
     return data;
 }
 
@@ -91,6 +111,16 @@ float midi_freq(int note)
     return powf(2.0, (note-69.0)/12.0)*440.0;
 }
 
+static float
+sawf(float a)
+{
+    float v = 0.0f;
+    int km = 100;
+    for (int k = 1; k <= km; k++) {
+       v += sinf(k*a)/k;
+    }
+    return 4.0f/PI*v;
+}
 
 static void
 def_sine_eval(void *instance, float *left_input, float *right_input, float *left_output, float *right_output, int len, int sample_rate, int num_msg, RtNodeMsg *msgs)
@@ -103,27 +133,82 @@ def_sine_eval(void *instance, float *left_input, float *right_input, float *left
         while (curr_msg < num_msg && msgs[curr_msg].time == f) {
             printf("msg\n");
             if (msgs[curr_msg].type == NOTE_ON) {
-                data->on = true;
-                printf("Note On: %d\n", msgs[curr_msg].note);
-                data->freq = midi_freq(msgs[curr_msg].note);
-                printf("freq -> %f\n", data->freq);
+
+                bool steal = true;
+                for (int i = 0; i < NUM_VOICES; i++) {
+                    if (data->voices[i].on == false) {
+                        data->voices[i].on = true;
+                        data->voices[i].freq = midi_freq(msgs[curr_msg].note);
+                        data->voices[i].time = 0;
+                        data->voices[i].note = msgs[curr_msg].note;
+                        steal = false;
+                        break;
+                    }
+                }
+
+                if (steal) {
+                    int curr = data->voice_assign;
+
+                    data->voices[curr].on = true;
+                    data->voices[curr].freq = midi_freq(msgs[curr_msg].note);
+                    data->voices[curr].note = msgs[curr_msg].note;
+                    data->voices[curr].time = 0;
+
+                    printf("Note On: %d\n", msgs[curr_msg].note);
+                    printf("freq -> %f\n", data->voices[curr].freq);
+
+                    data->voice_assign = (data->voice_assign + 1) % NUM_VOICES;
+                }
             }
             else if (msgs[curr_msg].type == NOTE_OFF) {
-                data->on = false;
+                for (int i = 0; i < NUM_VOICES; i++) {
+                    if (data->voices[i].note == msgs[curr_msg].note) {
+                        data->voices[i].on = false;
+                    }
+                }
             }
             else if (msgs[curr_msg].type == CC) {
             }
             curr_msg++;
         }
 
-        float v = 0.0;
-        if (data->on) {
-            v = sinf(2*PI*data->freq*data->time);
-            data->time += sample_time;
-        }
+        float mix = 1.0f/NUM_VOICES;
+        for (int i = 0; i < NUM_VOICES; i++) {
+            float val = 0.0;
+            if (data->voices[i].on) {
+                float t = data->voices[i].time;
 
-        left_output[f] = v;
-        right_output[f] = v;
+                float amp = data->sus_level;
+                // Attack
+                if (t < data->atk_time) {
+                    float rise = (data->sus_level-0.0f);
+                    float run = (data->atk_time-0.0f);
+                    float slope = rise/run;
+                    amp = slope*t;
+                }
+                // Release
+                else {
+                }
+
+                float f = data->voices[i].freq;// + vib; 
+                if (t < data->port_time) {
+                    float rise = data->port_depth;
+                    float run = data->port_time;
+                    float slope = rise/run;
+
+                    f = slope*t + (data->voices[i].freq-data->port_depth);
+                }
+
+                //float vib = data->vib_depth*sinf(2.0f*PI*data->vib_rate*t);
+                //float trem = data->trem_depth*sinf(2.0f*PI*data->trem_rate*t);
+                val = amp*mix*sawf(2*PI*f*t);
+                data->voices[i].time += sample_time;
+                //printf("%0.8f %0.8f %0.8f\n", t, vib, val);
+            }
+
+            left_output[f] += val;
+            right_output[f] += val;
+        }
     }
 }
 

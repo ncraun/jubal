@@ -2,7 +2,7 @@ CC := ccache gcc
 CFLAGS_REL := -std=c99 -Wall -pthread -Os -s 
 CFLAGS_DBG := -std=c99 -Wall -pthread -O0 -g 
 
-CFLAGS := $(CFLAGS_DBG) $(shell sdl2-config --cflags)
+CFLAGS := $(CFLAGS_REL) $(shell sdl2-config --cflags)
 
 LDLIBS := -ljack -lm $(shell sdl2-config --libs)
 

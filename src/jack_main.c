@@ -106,6 +106,10 @@ backend_jack_callback(jack_nframes_t nframes, void *arg)
         r_out[i] *= .1f;
     }
 
+    for (int i = 0; i < nframes; i++) {
+    //    printf("%0.8f ", l_out[i]);
+    }
+
     return 0;
 }
 int done = 0;
@@ -270,7 +274,7 @@ main()
     */
 
     bool running = true;
-    int oct = 3;
+    int oct = 2;
     SDL_Event e;
     while (running) {
         while (SDL_WaitEvent(&e)) {
