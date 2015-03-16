@@ -21,6 +21,18 @@
 #define JUBAL_ENGINE_H
 #include "lfqueue.h"
 
+enum DataType { F32, S32, U32 };
+union udata {
+	float f32;
+	int32_t s32;
+	uint32_t u32;
+};
+struct data {
+	enum DataType type;
+	union udata data;
+};
+
+
 enum Au_BufferType {L_IN=0, R_IN=1, L_OUT=2, R_OUT=3};
 
 /* Should be inline */
@@ -42,6 +54,8 @@ typedef struct FreeMsg FreeMsg;
 
 struct AudioNode {
     uint8_t def;
+    /* Instance param block */
+	void *params;
     //void *pdef;
     void *data;
 };
@@ -125,14 +139,16 @@ typedef struct ParamHints ParamHints;
 
 struct AudioDef {
     const char *name;
+	void *data;
 
     int num_controls;
     ParamHints *controls;
+    uint8_t param_types; // type tags
 
     /* Interface */
-    void* (*make)(void);
+    void* (*make)(int sample_rate);
     void (*init)(void);
-    void (*eval)(void *instance, float* left_input, float *right_input, float *left_output, float *right_output, int len, int sample_rate, int num_msg, RtNodeMsg* msgs);
+    void (*eval)(void *def_data, void *instance, float* left_input, float *right_input, float *left_output, float *right_output, int len, int sample_rate, int num_msg, RtNodeMsg* msgs);
     void (*free)(void *instance);
 
     void (*read)(int size, uint8_t *data);
@@ -177,6 +193,8 @@ struct EngineRT {
 
     RtNodeMsg *mailbox;
     int *mailbox_size;
+
+	struct wave_table *saw_table;
 };
 typedef struct EngineRT EngineRT;
 

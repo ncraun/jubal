@@ -25,8 +25,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <jack/jack.h>
-#include <pthread.h>
 #include "engine.h"
 #include "SDL.h"
 
@@ -34,43 +32,36 @@
 
 #define BILLION 10000000000LU
 
+int mygetch( ) {
+  struct termios oldt,
+                 newt;
+  int            ch;
+  tcgetattr( STDIN_FILENO, &oldt );
+  newt = oldt;
+  newt.c_lflag &= ~( ICANON | ECHO );
+  tcsetattr( STDIN_FILENO, TCSANOW, &newt );
+  ch = getchar();
+  tcsetattr( STDIN_FILENO, TCSANOW, &oldt );
+  return ch;
+}
+
 /*
     Jack Backend ?
 */
 
-jack_port_t *l_playback_port;
-jack_port_t *r_playback_port;
 struct timespec start;
 
-int
-backend_jack_buffer_size_change(jack_nframes_t buffer_size, void *arg)
+void
+sdl_callback(void *userdata, Uint8* stream, int len)
 {
-    Engine *engine = arg;
-    fprintf(stderr, "Changing buffer size from %d to %d\n", engine->rt.buffer_size, buffer_size);
-    engine_change_buffer_size(engine, buffer_size);
-
-    return 0;
-}
-
-int
-backend_jack_sample_rate_change(jack_nframes_t sample_rate, void *arg)
-{
-    /*fprintf(stderr, "Changing sample rate not implemeted yet!\n");
-    exit(1);*/
-    Engine *engine = arg;
-    engine_change_sample_rate(engine, sample_rate);
-    return 0;
-}
-
-int
-backend_jack_callback(jack_nframes_t nframes, void *arg)
-{
-    float *l_out = jack_port_get_buffer(l_playback_port, nframes);
-    float *r_out = jack_port_get_buffer(r_playback_port, nframes);
-    Engine *engine  = arg;
+    Engine *engine = userdata;
+    int samples = len/sizeof(float)/2; //2 channel stereo
+    float *fstr = (float*)stream;
+    float l[samples];
+    float r[samples];
     AuBuff buff;
-    buff.left = l_out;
-    buff.right = r_out;
+    buff.left = l;
+    buff.right = r;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
 
@@ -79,52 +70,19 @@ backend_jack_callback(jack_nframes_t nframes, void *arg)
         now.tv_sec--;
         now.tv_nsec += BILLION;
     }
-
     uint64_t diff_sec = now.tv_sec - start.tv_sec;
     uint64_t diff_nsec = now.tv_nsec - start.tv_nsec;
 
     uint64_t samp_diff = (diff_sec*engine->rt.sample_rate) + (diff_nsec*engine->rt.sample_rate)/BILLION;
-    
-    jubal_callback(buff, nframes, engine, samp_diff);
 
-    // Make it quieter for stream
-    for (int i = 0; i < nframes; i++) {
-        l_out[i] *= .1f;
-        r_out[i] *= .1f;
+    jubal_callback(buff, samples, engine, samp_diff);
+
+    for (int i = 0; i < samples; i++) {
+        fstr[i*2] = l[i];
     }
-
-    for (int i = 0; i < nframes; i++) {
-    //    printf("%0.8f ", l_out[i]);
+    for (int i = 0; i < samples; i++) {
+        fstr[i*2+1] = r[i];
     }
-
-    return 0;
-}
-int done = 0;
-void*
-non_rt_func(void* param)
-{
-    Engine *engine = param;
-    struct timespec poll_time;
-    poll_time.tv_sec = 0;
-    poll_time.tv_nsec = NON_RT_POLL_NS;
-    while (!__sync_fetch_and_add(&done, 0)) {
-        // Poll the free queue when needed
-        // experiment with wait time
-
-        //printf("poll\n");
-        FreeMsg tmp;
-        while (lfqueue_size(engine->free_q) > 0) {
-            lfqueue_poll(engine->free_q, &tmp);
-            printf("NONRT Free: %p!\n", tmp.data);
-            //tmp.free(tmp.data);
-        }
-
-        nanosleep(&poll_time, NULL);
-    }
-    printf("done!\n");
-    // pthread_exit vs return ?
-    // pthread_exit(NULL);
-    return NULL;
 }
 
 static int
@@ -200,70 +158,59 @@ int
 main()
 {
 
-    SDL_Init(SDL_INIT_VIDEO);
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
 
     SDL_Window *window;
     SDL_Renderer *renderer;
     SDL_CreateWindowAndRenderer(320, 240, 0, &window, &renderer);
 
-    jack_client_t *client = jack_client_open("Jubal 0.0.1", JackNullOption, NULL);
-    uint32_t sample_rate = jack_get_sample_rate(client);
-    uint32_t buffer_size = jack_get_buffer_size(client);
+    SDL_AudioSpec want, have;
+    SDL_AudioDeviceID dev;
+
+    uint32_t sample_rate = 48000;
+    uint32_t buffer_size = 512;
     int num_nodes = 256;
     int queue_size = 256;
 
-    l_playback_port = jack_port_register(client, "left", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput|JackPortIsTerminal, 0);
-    r_playback_port = jack_port_register(client, "right", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput|JackPortIsTerminal, 0);
-
     Engine *engine = make_engine(num_nodes, buffer_size, queue_size, sample_rate);
+    printf("Origin: %p\n", engine);
 
-    /*Start non-rt Free(ing) thread */
-    // pthread_t non_rt;
-    // pthread_attr_t non_rt_attr;
+    SDL_zero(want);
+    want.freq = 48000;
+    want.format = AUDIO_F32;
+    want.channels = 2;
+    want.samples = 256;
+    want.callback = sdl_callback;
+    want.userdata = engine;
 
-    // pthread_attr_init(&non_rt_attr);
-    // pthread_attr_setdetachstate(&non_rt_attr, PTHREAD_CREATE_DETACHED);
-    // How big a stack do we need?
-    // pthread_attr_setstacksize(&non_rt_attr, 256*1024);
+    dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_ANY_CHANGE);
 
-    // pthread_create(&non_rt, &non_rt_attr, non_rt_func, engine);
+    printf("freq: want: %d have: %d\n", want.freq, have.freq);
+    printf("format: want: %d have: %d\n", want.format, have.format);
+    printf("channels: want: %d have: %d\n", want.channels, have.channels);
+    printf("samples: want: %d have: %d\n", want.samples, have.samples);
+    printf("callback: want: %p have: %p\n", want.callback, have.callback);
+    printf("userdata: want: %p have: %p\n", want.userdata, have.userdata);
 
+    printf("engine: buffer_size: %d\n", engine->rt.buffer_size);
 
-    jack_set_buffer_size_callback(client, backend_jack_buffer_size_change, engine);
-    jack_set_process_callback(client, backend_jack_callback, engine);
-    jack_set_sample_rate_callback(client, backend_jack_sample_rate_change, engine);
+    printf("Driver: %s\n", SDL_GetCurrentAudioDriver());
 
-
-    /*
-        Can't connect ports before client is activated.
-        NOTE: Jack's port types are confusing:
-        Output means output from jack -> application, this is a capture port
-        Input means input jack <- application, this is a playback port
-    */
     clock_gettime(CLOCK_MONOTONIC, &start);
     engine_play(engine);
-    jack_activate(client);
-    const char **ports = jack_get_ports(client, NULL, NULL, JackPortIsPhysical|JackPortIsInput);
-    jack_connect(client, jack_port_name(l_playback_port), ports[0]);
-    jack_connect(client, jack_port_name(r_playback_port), ports[1]);
-
-    /* Auto route to OBS input for streaming. */
-/*
-    jack_connect(client, jack_port_name(l_playback_port), "JACK Input Client:in_1");
-    jack_connect(client, jack_port_name(r_playback_port), "JACK Input Client:in_2");
-*/
 
     /* Initiliaze sine node and connect to output */
     int sine_node = 5;
-    engine_change_node_def(engine, sine_node, 2);
+    engine_change_node_def(engine, sine_node, 3);
     engine_connect_output(engine, sine_node);
     /*
         Live Play!
     */
 
     bool running = true;
-    int oct = 3;
+    int oct = 2;
     SDL_Event e;
+    SDL_PauseAudioDevice(dev, 0);
     while (running) {
         while (SDL_WaitEvent(&e)) {
             if (e.type == SDL_QUIT) {
@@ -271,6 +218,13 @@ main()
                 break;
             }
             else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+				if (e.key.keysym.sym == SDLK_EQUALS) {
+					oct++;
+				}
+				else if (e.key.keysym.sym == SDLK_MINUS) {
+					oct--;
+				}
+
                 int note = sdl_key_to_note(e.key.keysym.sym);
                 if (note != -1) {
                     engine_note_on(engine, sine_node, note+12*oct, 0);
@@ -287,10 +241,8 @@ main()
         }
     }
 
-    jack_deactivate(client);
-    jack_client_close(client);
-    __sync_add_and_fetch(&done, 1);
+    SDL_PauseAudioDevice(dev, 1);
+    SDL_CloseAudioDevice(dev);
     SDL_Quit();
-    // pthread_exit(NULL);
     return 0;
 }

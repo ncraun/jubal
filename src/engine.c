@@ -30,11 +30,12 @@
 #include "bitset.h"
 #include "nodes.h"
 #include "autil.h"
+#include "wave_table.h"
 
 #define AUDIO_OUT_NODE 0
 #define DISABLED_DEF 0
 
-static AudioDef *audio_defs[] = {&def_disabled, &def_sine};
+static AudioDef *audio_defs[] = {&def_disabled, &def_disabled, &def_fm, &def_sub};
 
 Engine*
 make_engine(int num_nodes, int buffer_size, int queue_size, int sample_rate)
@@ -100,6 +101,11 @@ make_engine(int num_nodes, int buffer_size, int queue_size, int sample_rate)
     engine->rt.solo = malloc(BITSET_BYTES(num_nodes));
     memset(engine->rt.solo, 0, BITSET_BYTES(num_nodes));
 
+	engine->rt.num_solo = 0;
+
+	// TODO: Handle the wavetable initialization better...
+	// fill_saw_wave_table(&G_SAW_TABLE, sample_rate);
+	
     return engine;
 }
 
@@ -219,6 +225,7 @@ jubal_callback(AuBuff out, unsigned long frames, Engine *engine, unsigned long s
     if (engine->paused) {
         memset(out.left, 0, sizeof(float)*frames);
         memset(out.right, 0, sizeof(float)*frames);
+		// printf("Paused\n");
         return 0;
     }
 
@@ -259,7 +266,6 @@ jubal_callback(AuBuff out, unsigned long frames, Engine *engine, unsigned long s
             */
         }
     }
-
 
     while (lfqueue_size(engine->graph_q) > 0) {
         RtGraphMsg tmp_msg;
@@ -386,9 +392,12 @@ jubal_callback(AuBuff out, unsigned long frames, Engine *engine, unsigned long s
 
 
     /* Zero ALL Buffers */
+	/* Actually this is kind of slow, we should only zero the buffers we need to */
     memset(out.left, 0, sizeof(float)*frames);
     memset(out.right, 0, sizeof(float)*frames);
+/*
     memset(engine->rt.audio_buffer, 0, engine->rt.buffer_size*4*engine->rt.num_nodes*sizeof(float));
+*/
 
     /* Evaluate nodes */
 	/* TODO: In cases of mute, solo, disabled def, have a way to skip to 
@@ -401,10 +410,12 @@ jubal_callback(AuBuff out, unsigned long frames, Engine *engine, unsigned long s
         }
 
 		if (BITSET_TEST(engine->rt.mute, node)) {
+			// printf("Node: %d muted\n", node);
 			continue; // Don't eval muted nodes
 		}
 
 		if (engine->rt.num_solo != 0 && !BITSET_TEST(engine->rt.solo, node)) {
+			// printf("Node: %d not solo\n", node);
 			continue; // Don't eval if solo mode is active, and curr node not solo.
 		}
 
@@ -413,7 +424,13 @@ jubal_callback(AuBuff out, unsigned long frames, Engine *engine, unsigned long s
         float *curr_right_input = au_buffer(engine->rt.audio_buffer, node, engine->rt.buffer_size, R_IN);
         float *curr_left_output = au_buffer(engine->rt.audio_buffer, node, engine->rt.buffer_size, L_OUT);
         float *curr_right_output = au_buffer(engine->rt.audio_buffer, node, engine->rt.buffer_size, R_OUT);
-        curr_def->eval(curr->data, curr_left_input, curr_right_input, curr_left_output, curr_right_output, frames, engine->rt.sample_rate, engine->rt.mailbox_size[node], engine->rt.mailbox+node*engine->rt.queue_size);
+		// Zero buffers
+		memset(curr_left_input, 0, engine->rt.buffer_size*sizeof(float));
+		memset(curr_right_input, 0, engine->rt.buffer_size*sizeof(float));
+		memset(curr_left_output, 0, engine->rt.buffer_size*sizeof(float));
+		memset(curr_right_output, 0, engine->rt.buffer_size*sizeof(float));
+		// printf("Calling eval for node %d\n", node);
+        curr_def->eval(curr_def->data, curr->data, curr_left_input, curr_right_input, curr_left_output, curr_right_output, frames, engine->rt.sample_rate, engine->rt.mailbox_size[node], engine->rt.mailbox+node*engine->rt.queue_size);
 
         /* Mix Evaulated node into its outputs */
 
@@ -429,6 +446,7 @@ jubal_callback(AuBuff out, unsigned long frames, Engine *engine, unsigned long s
 
             next = bitset_next_set_bit(engine->non_rt.connected_outputs+i*BITSET_SIZE(engine->rt.num_nodes), next, engine->rt.num_nodes);
         }
+		// printf("Evaluated Node: %d\n", node);
     }
     /* All Nodes have been evaluated. Mix the connected ones into the system output. */
     int node_out = bitset_next_set_bit(engine->rt.out_conn, 0, engine->rt.num_nodes);
@@ -477,9 +495,13 @@ engine_change_buffer_size(Engine *engine, int buffer_size)
 void
 engine_change_sample_rate(Engine *engine, int sample_rate)
 {
+    printf("Change sample rate from %d to %d.\n", engine->rt.sample_rate, sample_rate);
     RtSysMsg msg;
     msg.type = CHANGE_SAMPLE_RATE;
     msg.new_sample_rate = sample_rate;
+
+/* TODO: A better way of refilling the wavetables when samplerate changes. */
+	fill_saw_wave_table(&G_SAW_TABLE, sample_rate);
     lfqueue_add(engine->sys_q, &msg);
 }
 
@@ -554,7 +576,7 @@ engine_change_node_def(Engine *engine, int node, int def)
     RtDefMsg msg;
     msg.node = node;
     msg.new_def = def;
-    msg.new_instance = engine->rt.defs[def]->make();
+    msg.new_instance = engine->rt.defs[def]->make(engine->rt.sample_rate);
 
     lfqueue_add(engine->def_q, &msg);
 }

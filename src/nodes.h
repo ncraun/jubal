@@ -22,5 +22,7 @@
 
 extern AudioDef def_disabled;
 extern AudioDef def_sine;
+extern AudioDef def_fm;
+extern AudioDef def_sub;
 
 #endif

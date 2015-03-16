@@ -17,12 +17,23 @@
     along with Jubal.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifndef JUBAL_POOL_H
+#define JUBAL_POOL_H
+
 /*
-    UI
-
-    UI is done with a widget like interface. Each node has a ui description,
-	which is a mapping of parameter numbers to widgets. Each different UI
-	backend can then implement each widget on its specific platform.
-
-	Widgets:
+	Memory Pool allocator
 */
+
+#include "node.h"
+
+union data {
+	struct fm_data;
+	struct additive_data;
+};
+
+struct block {
+	uint8_t flags;
+	union data data;
+};
+
+#endif
