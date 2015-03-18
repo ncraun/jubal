@@ -17,14 +17,40 @@
     along with Jubal.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef JUBAL_NODES_H
-#define JUBAL_NODES_H
+#include "pool.h"
 
-extern AudioDef def_disabled;
-extern AudioDef def_sine;
-extern AudioDef def_fm;
-extern AudioDef def_sub;
+pool*
+make_pool(uint16_t capacity)
+{
+	pool *p = malloc(sizeof(pool));
+	p->capacity = capacity;
+	p->pool = malloc(capacity*sizeof(union pool_block));
+	
+	for (unsigned int i = 0; i < capacity; i++) {
+		p->pool.next = i+1;
+	}
+	
+	return p;
+}
 
-enum {SUB_CUTOFF=0, SUB_RES=1};
+uint16_t
+pool_alloc(pool *p)
+{
+	uint16_t old_head = p->head;
+	p->head = p->pool[old_head].next;
+	return old_head;
+}
 
-#endif
+void
+pool_free(pool *p, uint16_t addr)
+{
+	uint16_t old_head = addr;
+	p->head = addr;
+	p->pool[addr].next = old_head;
+}
+
+void*
+pool_get(pool *p. uint16_t addr)
+{
+	return p->pool + addr;
+}

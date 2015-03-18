@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include "engine.h"
 #include "SDL.h"
+#include "nodes.h"
 
 #define NON_RT_POLL_NS 500000000L
 
@@ -211,6 +212,8 @@ main()
     int oct = 2;
     SDL_Event e;
     SDL_PauseAudioDevice(dev, 0);
+	double f = 10000;
+	double r = 1.0;
     while (running) {
         while (SDL_WaitEvent(&e)) {
             if (e.type == SDL_QUIT) {
@@ -223,6 +226,31 @@ main()
 				}
 				else if (e.key.keysym.sym == SDLK_MINUS) {
 					oct--;
+				}
+				/* Filter */
+				else if (e.key.keysym.sym == SDLK_LEFTBRACKET) {
+					union param_data p;
+					f -= 250.0;
+					p.f32 = f;
+					engine_node_cc(engine, sine_node, SUB_CUTOFF, p, 0);
+				}
+				else if (e.key.keysym.sym == SDLK_RIGHTBRACKET) {
+					union param_data p;
+					f += 250.0;
+					p.f32 = f;
+					engine_node_cc(engine, sine_node, SUB_CUTOFF, p, 0);
+				}
+				else if (e.key.keysym.sym == SDLK_DOWN) {
+					union param_data p;
+					r -= .25;
+					p.f32 = r;
+					engine_node_cc(engine, sine_node, SUB_RES, p, 0);
+				}
+				else if (e.key.keysym.sym == SDLK_UP) {
+					union param_data p;
+					r += .25;
+					p.f32 = r;
+					engine_node_cc(engine, sine_node, SUB_RES, p, 0);
 				}
 
                 int note = sdl_key_to_note(e.key.keysym.sym);

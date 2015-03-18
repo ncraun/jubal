@@ -22,15 +22,12 @@
 #include "lfqueue.h"
 
 enum DataType { F32, S32, U32 };
-union udata {
+union param_data {
 	float f32;
 	int32_t s32;
 	uint32_t u32;
 };
-struct data {
-	enum DataType type;
-	union udata data;
-};
+
 
 
 enum Au_BufferType {L_IN=0, R_IN=1, L_OUT=2, R_OUT=3};
@@ -74,7 +71,7 @@ struct RtNodeMsg {
     int note;
     int time;
     int param;
-    int value;
+    union param_data value;
 };
 
 typedef struct RtNodeMsg RtNodeMsg;
@@ -262,7 +259,8 @@ typedef struct Engine Engine;
 /**/
 void engine_note_on(Engine *engine, int node, int note, int time);
 void engine_note_off(Engine *engine, int node, int note, int time);
-void engine_node_cc(Engine *engine, int node, int param, int value, int time);
+void engine_node_cc(Engine *engine, int node, int param, union param_data 
+value, int time);
 void engine_change_node_def(Engine *engine, int node, int def);
 
 /* TODO: How can we reply back about cycle detection? */

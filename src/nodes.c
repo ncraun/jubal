@@ -28,6 +28,8 @@
 #include "wave_table.h"
 #include "blep.h"
 
+#include "nodes.h"
+
 #define NUM_VOICES 8
 
 #define DPW_ORDER 6
@@ -350,50 +352,7 @@ def_sine2_eval(void *instance, float *left_input, float *right_input, float *lef
         for (int i = 0; i < NUM_VOICES; i++) {
             float val = 0.0;
             if (data->voices[i].on) {
-
-#if 0
-                float t = data->voices[i].time;
-
-                float amp = data->sus_level;
-                // Attack
-                if (t < data->atk_time) {
-                    float rise = (data->sus_level-0.0f);
-                    float run = (data->atk_time-0.0f);
-                    float slope = rise/run;
-                    amp = slope*t;
-                }
-                // Release
-                else {
-                }
-
-                float vib = data->vib_depth*cosf(2.0f*PI*data->vib_rate*t);
-                /* The Vib sinewave is in cents, convert vib to Hz and add to f. */
-                /* Or... should we convert beforehand, and then make the Vib sinewave be in Hz? */
-                float vib_hz = data->voices[i].freq*powf(2.0f, vib/1200.0f);
-                float f = data->voices[i].freq + vib_hz; 
-                float f_c = 1200*log2f(f/data->voices[i].freq); // Let's see how many cents the output is...
-                static float f_c_min = 100000.0f;
-                static float f_c_max = -1000000.0f; 
-                if (f_c < f_c_min) f_c_min = f_c;
-                if (f_c > f_c_max) f_c_max = f_c;
-                printf("Out pitch: %0.8f Cents Min: %0.8f Max: %0.8f\n", f_c, f_c_min, f_c_max);
-
-                //printf("%0.8f\n", f);
-                if (t < data->port_time) {
-/*
-                    float rise = data->port_depth;
-                    float run = data->port_time;
-                    float slope = rise/run;
-
-                    f = slope*t + (data->voices[i].freq-data->port_depth);
-*/
-                }
-
-                //float trem = data->trem_depth*sinf(2.0f*PI*data->trem_rate*t);
-                //val = amp*mix*cosf(2*PI*f*t);
-
-            #endif
-
+			  
 /* Why isn't this working? */
                 float a_o = mix;
                 float f_o = data->voices[i].freq;
@@ -530,6 +489,13 @@ struct svf {
 	double lp_delay;
 };
 
+struct ladder {
+	double s1;
+	double s2;
+	double s3;
+	double s4;
+};
+
 struct sub_voice {
 	uint8_t on;
 	uint8_t key_off;
@@ -537,6 +503,8 @@ struct sub_voice {
 
 	double phasor; // Normalized phase in range [0 to 1)
 
+	double time;
+	
 	float freq;
 	float a_off;
 	float t_off;
@@ -545,9 +513,11 @@ struct sub_voice {
 	double prev_dpw[DPW_ORDER];
 	bool dpw_initialized;
 	int dpw_delayed;
+	double pulse_width;
 	struct dpw dpw_d1;
 	struct dpw dpw_d2;
 	struct svf svf;
+	struct ladder ladder;
 };
 
 struct sub {
@@ -555,6 +525,9 @@ struct sub {
 	double cutoff;
 	double prewarp_cutoff_g; // = tan(cutoff/(2.0*sample_rate)), Remember to update when cutoff or sample_rate changes
 	double res;
+	
+	double pwm_rate;
+	double pwm_amount;
 	struct sub_voice voices[NUM_VOICES];
 };
 
@@ -723,15 +696,22 @@ def_sub_make(int sample_rate)
 		data->voices[i].svf.hp_delay = 0.0;
 		data->voices[i].svf.bp_delay = 0.0;
 		data->voices[i].svf.lp_delay = 0.0;
+		
+		data->voices[i].ladder.s1 = 0.0;
+		data->voices[i].ladder.s2 = 0.0;
+		data->voices[i].ladder.s3 = 0.0;
+		data->voices[i].ladder.s4 = 0.0;
+
 		for (int o = 0; o < DPW_ORDER; o++) {
 			data->voices[i].prev_dpw[o] = 0.0;
 		}
 	}
 	data->last_assign = 0;
-	data->cutoff = 2.0*PI*500; // Hz
+	data->cutoff = 2.0*PI*2000; // Hz
 	data->prewarp_cutoff_g = tan(data->cutoff/(2.0*sample_rate));
-	data->res = 0.2; // 1.0 is no resonance, 0.0 is unstable
-
+	data->res = 1;// 0.2; // For SVF, 1.0 is no resonance, 0.0 is unstable
+	data->pwm_rate = .1f;
+	data->pwm_amount = 1.0;
     return data;
 }
 
@@ -784,133 +764,6 @@ def_sub_make(int sample_rate)
 
 	Virtual Analog Filter Algorithms:
 */
-
-/*
-	Poly BLEP approximation functions:
-1:
-	3 point spline, given in "Computationally Efficient Music Synthesis", Pekonen, 2007
-
-	t e [-N, N]
-	t e [-1/fs, 1/fs]
-	We use N = 1/fs = 1 sample's amount of time, before and after the step
-
-	r(t) = (-3/14)t^4 - (4/7)t^3 + (6/7)t + 1/2,  -1 <= t <= 0 
-	r(t) = (3/14)t^4 - (4/7)t^3 + (6/7)t - 1/2,    0 < t <= 1
-	
-*/
-static float
-poly_blep_spline3(float t)
-{
-
-	static float c4 = 3.0f/14.0f;
-	static float c3 = 4.0f/7.0f;
-	static float c1 = 6.0f/7.0f;
-	static float c0 = 0.5f;
-
-	float t3 = t*t*t;
-	float t4 = t3*t;
-
-	// 0 <= t < 1
-	if (t < 1.0f && t >= 0.0f) {
-
-		return c4*t4 - c3*t3 + c1*t + -c0;
-	}
-
-	// -1 < t < 0
-	else if (t > -1.0f && t < 0.0f) {
-		return -c4*t4 - c3*t3 + c1*t + c0;
-	}
-
-	return 0.0f;
-}
-
-/*
-	Optimal PolyBLEP from
-	Filter-Based Oscillator Algorithms for Virtual Analog Synthesis	
-
-	d is the fractional delay of the discontinuity
-	it can be computed from a normalized unipolar modulo phase counter
-	(from 0 to 1) using similar triangles
-
-	p(n)   f_0*T
-	---  = -----
-	T*d       T
-
-	d = (p(n))/(f_0*T)
-
-	where p(n) is the modulo counter value after the discontinuity
-	d is the fractional delay
-	T is the sampling interval
-	f_0T is the step size of the counter (the phase increment)
-
-
-	For a rectangular pulse wave, fractional delay w/ downward discontinuity is
-	computed from the value of the modulo counter after it exceeds P, the duty
-	cycle. In this case P needs to be subtracted from the modulo counter value.
-	When generating a triangle wave, the fractional delays of turning points
-	are obtained similarly with P = 0.5
-	
-	D is the delay in sampling intervals
-	N = order of the polynomial	
-
-	odd-order interpolation polynomials:
-		d = D - (N - 1)/2
-
-	If polynomial is even:
-		if discontinuity is closer to 
-		
-
-	Optimized PolyBLEP function (from Pekonen)
-	alias-free (minimal aliasing?) range of fundamental freqs above range used in music!
-
-	3rd order FIR filter Pub III section II
-
-	Polynomial spline g(t) from L consecutive polynomial segments
-	g(t) = Sum from k=0 to K_l of (g_{l,k})t^k,   t e [t_{l-1}, t_l],  l = 1, 2, ..., L
-	t is the time variable
-	K_l is the order
-	g_{l,k} are the coefficients of the polynomial in the l-th subrange
-
-	outside of definition range t e [t_0, t_L] g(t) is def to be 0
-
-	Create an FIR filter of order N = ceil(tL - t0 - 1)
-	filter coefficients bn for n = 0, 1, ..., N are given by bn(d) = g(t0 + n + d)
-	where d e [0, 1) is the fractional delay which defines the sample point within
-	the sampling interval.
-
-	Optimized BLEP residual:
-		b0(d) = 0.00029*d + 0.00737*d^2 + 0.00617*d^3 + 0.03871*d^4
-		b1(d) = 0.05254 + 0.18783*d + 0.22663*d^2 + 0.14955*d^3 - 0.11656*d^4
-		b2(d) = -0.5 + 0.62351*d + 0.02409*d^2 - 0.31670*d^3 + 0.11656*d^4
-		b3(d) = -0.05254 + 0.18839*d - 0.25816*d^2 + 0.16102*d^3 - 0.03871*d^4
-
-	N = 3
-*/
-
-/*
-	Based off of "Perceptually informed synthesis of bandlimited classic waveforms"
-*/
-
-static float
-poly_blep_optimal_fir(float d, float* prev) 
-{
-	float d2 = d*d;
-	float d3 = d2*d;
-	float d4 = d2*d2;
-
-	double b0 = 0.00029*d + 0.00737*d2 + 0.00617*d3 + 0.03871*d4;
-	double b1 = 0.05254 + 0.18783*d + 0.22663*d2 + 0.14955*d3 - 0.11656*d4;
-	double b2 = -0.5 + 0.62351*d + 0.02409*d2 - 0.31670*d3 + 0.11656*d4;
-	double b3 = -0.05254 + 0.18839*d - 0.25816*d2 + 0.16102*d3 - 0.03871*d4;
-
-	return b0*prev[0] + b1*prev[1] + b2*prev[2] + b3*prev[3];
-}
-
-static float
-poly_blep(float t)
-{
-	return poly_blep_spline3(t);
-}
 
 long
 factorial(long a)
@@ -1098,6 +951,7 @@ static void def_sub_eval(void *def_data, void *instance, float *l_in, float *r_i
 				printf("Freq: %f\n", voice->freq);
 				voice->key_off = false;
 				voice->phasor = 0.0f;
+				voice->pulse_width = 0.0f;
 				voice->note = msgs[curr_msg].note;
 				memset(voice->poly_blep_fir, 0, 4*sizeof(float));
 				for (int o = 0; o < DPW_ORDER; o++) {
@@ -1112,6 +966,10 @@ static void def_sub_eval(void *def_data, void *instance, float *l_in, float *r_i
 				voice->svf.hp_delay = 0.0;
 				voice->svf.bp_delay = 0.0;
 				voice->svf.lp_delay = 0.0;
+				voice->ladder.s1 = 0.0;
+				voice->ladder.s2 = 0.0;
+				voice->ladder.s3 = 0.0;
+				voice->ladder.s4 = 0.0;
             }
             else if (msgs[curr_msg].type == NOTE_OFF) {
 				for (int i = 0; i < NUM_VOICES; i++) {
@@ -1131,12 +989,25 @@ static void def_sub_eval(void *def_data, void *instance, float *l_in, float *r_i
 					}
 				}
             }
+            else if (msgs[curr_msg].type == CC) {
+				/*if (msgs[curr_msg].param == SUB_OSC1_MODE) {
+				}
+				else*/ if (msgs[curr_msg].param == SUB_CUTOFF) {
+					float new_cutoff = msgs[curr_msg].value.f32;
+					data->cutoff = 2.0*PI*new_cutoff; // Hz
+					data->prewarp_cutoff_g = 
+						tan(data->cutoff/(2.0*sample_rate));
+				}
+				else if (msgs[curr_msg].param == SUB_RES) {
+					float new_res = msgs[curr_msg].value.f32;
+					data->res = new_res;
+				}
+			}
             curr_msg++;
         }
 
 // Oversampling DPW
 
-#if 1
 // DPW func-call
 	for (int i = 0; i < NUM_VOICES; i++) {
 		struct sub_voice *voice = data->voices + i;
@@ -1144,22 +1015,25 @@ static void def_sub_eval(void *def_data, void *instance, float *l_in, float *r_i
 			continue;
 		}
 		
-		double phase_inc = voice->freq/sample_rate;
+		double freq = voice->freq + sin(5.0*2*PI*voice->time);
+		double phase_inc = freq/sample_rate;
 
 		double amp = 1.0/NUM_VOICES;
 		// Saw wave
-		 double dpw = dpw_saw(&(voice->dpw_d1), voice->phasor, voice->freq, sample_rate);
+		double dpw = dpw_saw(&(voice->dpw_d1), voice->phasor, voice->freq, 
+ sample_rate);
 		// Square wave (rect w/ pw=50%)
-		// double dpw = dpw_rect(&(voice->dpw_d1), &(voice->dpw_d2), voice->phasor, voice->freq, sample_rate, .15);
+		/*
+		double dpw = dpw_rect(&(voice->dpw_d1), &(voice->dpw_d2), 
+			voice->phasor, voice->freq, sample_rate, 0.5);
+			*/
+// .5+.5*sin(2.0*PI*voice->pulse_width));
 		// Triangle Wave
 		// double dpw = dpw_tri(&(voice->dpw_d1), voice->phasor, voice->freq, sample_rate);
 
 		// Filter
-		#if 0
-		// Moog Ladder
-		#endif
 
-		#if 1
+#if 0
 		// 2-pole TPT-SVF
 
 		// Frequency warping
@@ -1196,400 +1070,61 @@ static void def_sub_eval(void *def_data, void *instance, float *l_in, float *r_i
 
 		// printf("DPW: %f G: %f S1: %f S2: %f cutoff_warp: %f HP: %f BP: %f LP: %f\n", dpw, G, S1, S2, cutoff_warp, high_pass, band_pass, low_pass);
 		// assert(low_pass <= 10.0);
-
-
-		double v = amp*low_pass;
-		// printf("%f\n",low_pass);
-		#endif
-
-		#if 0
-		// Naive lowpass filter
-		double w_c = data->cutoff/(2.0*sample_rate);
-		voice->svf.lp_delay = voice->svf.lp_delay + (dpw - voice->svf.lp_delay)*w_c;
-		printf("NaiveLP: %f w_c: %f\n", voice->svf.lp_delay, w_c);
-		assert(!isnan(voice->svf.lp_delay));
-		double v = amp*voice->svf.lp_delay;
-		#endif 
-
-
-		#if 0
-		// 1 pole filter RC
-		double g = data->cutoff/(2.0*sample_rate);
-
-		// double u = (dpw - voice->svf.lp_delay)*g/(1.0+g);
-		// double lp = u + voice->svf.lp_delay;
-
-		double lp = (dpw*g + voice->svf.lp_delay)/(1.0 + g);
-		voice->svf.lp_delay = lp;
-		printf("1PoleLP: %f g: %f \n", lp, g );
-
-		double v = amp*lp;
-		#endif		
-
-		l_out[n] += v;
-		r_out[n] += v;
-
-		voice->phasor += phase_inc;
-		if (voice->phasor >= 1.0) {
-			voice->phasor -= 1.0;
-		}
-	}
-#endif
-
-#if 0
-// 2nd order DPW (no delay)
-// Create a PWM rectangle by subtracting two DPW sawtooths
-// Create a DPW triangle by ... (it's possible)
-
-	for (int i = 0; i < NUM_VOICES; i++) {
-		struct sub_voice *voice = data->voices + i;
-		if (!voice->on) {
-			continue;
-		}
-
-		double dpw_P = sample_rate/voice->freq;
-		double phase_inc = voice->freq/sample_rate;
-
-		if (!voice->dpw_data.initialized) {
-			// Time travel
-			double prev_phasor = voice->phasor - phase_inc;
-			if (prev_phasor < 0) {
-				prev_phasor += 1.0;
-			}
-
-			double saw_prev = 2.0*prev_phasor - 1.0;
-			double saw2_prev = saw_prev*saw_prev;
-			voice->dpw_data.prev = saw2_prev;
-			voice->dpw_data.initialized = true;
-		}
-
-		double saw = 2.0*voice->phasor - 1.0;	
-		double saw2 = saw*saw;
-
-		double dpw = saw2 - voice->dpw_data.prev;
-		voice->dpw_data.prev = saw2;
-
-		double dpw_scale = PI/(4.0*sin(PI/dpw_P));
-
-		double amp = 1.0/NUM_VOICES;
-		double v = amp*dpw*dpw_scale;
-
-		l_out[n] += v;
-		r_out[n] += v;
-
-		voice->phasor += phase_inc;
-		if (voice->phasor >= 1.0) {
-			voice->phasor -= 1.0;
-		}
-	}
-#endif
-
-#if 0
-// Order N DPW
-
-	for (int i = 0; i < NUM_VOICES; i++) {
-		struct sub_voice *voice = data->voices + i;
-		if (!voice->on) {
-			continue;
-		}
-		double phase_inc = voice->freq/sample_rate;
-		double dpw_P = sample_rate/voice->freq;
-
-
-		// DPW introduces DPW_ORDER delays when starting
-		// So if DPW needs to be initialized, "Go back in time" DPW_ORDER samples
-		// and start there
-
-#if 0
-		if (!voice->dpw_initialized) {
-			// Initialize by going back in time DPW_ORDER samples
-			double phasor = voice->phasor - DPW_ORDER*phase_inc;
-			while (phasor < 0) {
-				phasor += 1.0;
-			}
-
-			double curr_dpw[DPW_ORDER];
-
-			for (int o = 0; o < DPW_ORDER; o++) {
-				voice->prev_dpw[o] = 0.0;
-			}
-
-			for (int s = 0; s < DPW_ORDER; s++) {
-
-				double saw = 2.0*voice->phasor - 1.0;
-				double saw2 = saw*saw;
-				double saw4 = saw2*saw2;
-				double saw6 = saw4*saw2;
-
-
-				curr_dpw[DPW_ORDER-1] = saw6 - 5.0*saw4 + 7.0*saw2;
-				for (int o = DPW_ORDER-2; o >= 0; o--) {
-					curr_dpw[o] = curr_dpw[o+1] - voice->prev_dpw[o+1];
-				}
-
-				for (int o = 0; o < DPW_ORDER; o++) {
-					voice->prev_dpw[o] = curr_dpw[o];
-				}
-
-				phasor += phase_inc;
-				if (phasor >= 1.0) {
-					phasor -= 1.0;
-				}
-			}
-
-			voice->dpw_initialized = true;
-		}
 #endif
 
 #if 1
-		// Delay (w/ out the go back in time thing.)
-		if (!voice->dpw_initialized) {
-			voice->dpw_delayed = 0;
-			voice->dpw_initialized = true;
-		}
+		// Moog Ladder Filters
+		// Linear Analog Model
+		double g = data->prewarp_cutoff_g;
+		double k = data->res;
+		double g2 = g*g;
+		double g3 = g2*g;
+		double g4 = g3*g;
+		
+		double G = g4;
+		double S = g3*voice->ladder.s1 + g2*voice->ladder.s2 + 
+			g*voice->ladder.s3 + voice->ladder.s4;
+		
+		double u = tanh(((1.0+k)*dpw - k*S)/(1.0 + k*G));
 
+		double ns1 = (g*u + voice->ladder.s1)/(1.0 + g);
+		double ns2 = (g*ns1 + voice->ladder.s2)/(1.0 + g);
+		double ns3 = (g*ns2 + voice->ladder.s3)/(1.0 + g);
+		double ns4 = (g*ns3 + voice->ladder.s4)/(1.0 + g);
+		
+		double low_pass = ns4;
+		voice->ladder.s1 = ns1;
+		voice->ladder.s2 = ns2;
+		voice->ladder.s3 = ns3;
+		voice->ladder.s4 = ns4;
+		
+		// Should be ~=
+		/*
+		printf("LPF1: %lf LPF2: %lf LPF3: %lf LPF4: %lf y: %lf\n", 
+			voice->ladder.s1, voice->ladder.s2, voice->ladder.s3, 
+			voice->ladder.s4, low_pass);
+		*/
+		
+		// LP1
+		// LP2
+		// LP3
+		// LP4
+		// Feedback Shaping
+		// Non Linearities
 #endif
 
-		// Main DPW	
-		double curr_dpw[DPW_ORDER];
+		double v = amp*low_pass;
+		// printf("%f\n",low_pass);	
 
-		double saw = 2.0*voice->phasor - 1.0;
-		double saw2 = saw*saw;
-		double saw4 = saw2*saw2;
-		double saw6 = saw4*saw2;
-
-		curr_dpw[DPW_ORDER-1] = saw6 - 5.0*saw4 + 7.0*saw2;
-		for (int o = DPW_ORDER-2; o >= 0; o--) {
-			curr_dpw[o] = curr_dpw[o+1] - voice->prev_dpw[o+1];
-		}
-
-		for (int o = 0; o < DPW_ORDER; o++) {
-			voice->prev_dpw[o] = curr_dpw[o];
-		}
-
-		double dpw_scale = pow(PI, DPW_ORDER-1)/(factorial(DPW_ORDER)*pow(2.0*sin(PI/dpw_P), DPW_ORDER-1));
-		double v = curr_dpw[0]*dpw_scale;
-
-		if (voice->dpw_delayed <= DPW_ORDER) {
-			v = 0.0;
-			voice->dpw_delayed += 1;
-			printf("%d\n", voice->dpw_delayed);
-		}
-
-		double amp = 1.0/NUM_VOICES;
-		v *= amp;
-		
 		l_out[n] += v;
 		r_out[n] += v;
 
 		voice->phasor += phase_inc;
+		voice->time += 1.0/sample_rate;
 		if (voice->phasor >= 1.0) {
 			voice->phasor -= 1.0;
 		}
 	}
-
-#endif
-
-#if 0
-// BLEP
-
-		struct blep *blep = def_data;
-
-		for (int i = 0; i < NUM_VOICES; i++) {
-			struct sub_voice *voice = data->voices + i;
-			double phase_inc = voice->freq/sample_rate;
-			
-
-			if (!voice->on) {
-				continue;
-			}
-
-			// Saw wave
-
-			assert(voice->phasor <= 1.0);
-
-			float mod = 0.0f;
-			if (voice->phasor > 1.0 - phase_inc) {
-				// On the left side of the discontinuity
-				// Find distance from discontinuity
-				float dist = (voice->phasor - 1.0);
-				float idx = (1.0 + dist)*(blep->len/2 - 1);
-				int index = idx;
-				printf("L Dist: %f idx: %f Index: %d\n", index, dist, idx);
-				mod = blep->table[index];
-			}
-			else if (voice->phasor < phase_inc) {
-				// On the right side of the discontinuity
-				float dist = voice->phasor; 
-				float idx = (1.0 + dist)*(blep->len/2 - 1);
-				int index = idx;
-				printf("R Dist: %f idx: %f Index: %d\n", index, dist, idx);
-				mod = blep->table[index];
-			}
-
-			// Create the naive sawtooth and modify it w/ the polyblep
-			float saw = 2.0f*voice->phasor - 1.0f;
-			float amp = 1.0f/(NUM_VOICES);
-			float v = amp*(saw + mod);
-
-			l_out[n] += v;
-			r_out[n] += v;
-
-			voice->phasor += phase_inc;
-			if (voice->phasor >= 1.0) {
-				voice->phasor -= 1.0;
-			}
-		}
-#endif
-
-#if 0
-// PolyBLEP
-		for (int i = 0; i < NUM_VOICES; i++) {
-			struct sub_voice *voice = data->voices + i;
-			double phase_inc = voice->freq/sample_rate;
-
-			if (!voice->on) {
-				continue;
-			}
-
-			// Saw wave
-			float mod = 0.0f;
-			if (voice->phasor > 1.0 - phase_inc) {
-				// On the left side of the discontinuity
-				// Find distance from discontinuity
-				float dist = (1.0 - voice->phasor); 
-			// printf("Phasor: %f Phase Inc: %f Dist: %f\n", voice->phasor, phase_inc, dist);
-				mod = poly_blep(dist);
-			}
-			else if (voice->phasor < phase_inc) {
-				// On the right side of the discontinuity
-				float dist = voice->phasor; 
-				mod = poly_blep(dist);
-			//	printf("right\n");
-			}
-
-			// Create the naive sawtooth and modify it w/ the polyblep
-			float saw = 2.0f*voice->phasor - 1.0f;
-			float amp = 1.0f/(NUM_VOICES);
-			float v = amp*(saw + mod);
-
-			l_out[n] += v;
-			r_out[n] += v;
-
-			voice->phasor += phase_inc;
-			if (voice->phasor >= 1.0) {
-				voice->phasor -= 1.0;
-				// printf("Discontinuity: Phasor: %f Inc: %f\n", voice->phasor, phase_inc);
-			}
-		}
-		
-#endif
-
-#if 0
-// FIR optimal PolyBLEP
-
-		for (int i = 0; i < NUM_VOICES; i++) {
-			struct sub_voice *voice = data->voices + i;
-			double phase_inc = voice->freq/sample_rate;
-
-			if (!voice->on) {
-				continue;
-			}
-
-			// Saw wave
-			float mod = 0.0f;
-			if (voice->phasor >= 1.0 - phase_inc) {
-				// On the left side of the discontinuity
-				float d = (voice->phasor - 1.0);
-				mod = poly_blep_optimal_fir(d, voice->poly_blep_fir);
-			}
-			else if (voice->phasor <= phase_inc) {
-				// On the right side of the discontinuity
-				float d = voice->phasor;
-				mod = poly_blep_optimal_fir(d, voice->poly_blep_fir);
-			}
-
-
-			// Create the naive sawtooth and modify it w/ the polyblep
-			float saw = 2.0f*voice->phasor - 1.0f;
-			float corrected = saw + mod;
-			float amp = 1.0f/(NUM_VOICES);
-			float v = amp*corrected;
-
-			l_out[n] += v;
-			r_out[n] += v;
-
-			// Update fir
-			voice->poly_blep_fir[3] = voice->poly_blep_fir[2];
-			voice->poly_blep_fir[2] = voice->poly_blep_fir[1];
-			voice->poly_blep_fir[1] = voice->poly_blep_fir[0];
-			voice->poly_blep_fir[0] = corrected;
-
-			voice->phasor += phase_inc;
-			if (voice->phasor >= 1.0) {
-				voice->phasor -= 1.0;
-				// printf("Discontinuity: Phasor: %f Inc: %f\n", voice->phasor, phase_inc);
-			}
-		}
-		
-#endif
-
-#if 0
-// Wavetable
-	struct wave_table *saw = def_data;
-		for (int i = 0; i < NUM_VOICES; i++) {
-			struct sub_voice *voice = data->voices + i;
-			double phase_inc = voice->freq/sample_rate;
-
-			if (!voice->on) {
-				continue;
-			}
-
-			// Read value from the appropriate wave table
-			// Linear scan, only 10 tables so should be ok.
-			int t = 0;
-			while (t < NUM_WAVE_TABLES && saw->tables[t].max_freq < voice->freq) {
-				t++;
-			}
-
-			// TODO: if t is out of range of the tables, just use a sine wave
-			
-			struct wave_table_entry *table = saw->tables + t;
-
-			float incr = table->len*(voice->freq/(float)sample_rate);
-			int km = sample_rate/(2.0*table->max_freq);
-
-			// Linear Interpolation (1st order spline)
-			double pos = voice->phasor*(table->len/saw->over_sample);
-			int s = pos;
-			double frac = pos - s;
-			int s1 = (s+saw->over_sample) % (table->len);
-
-			int so = s;// + table->offset;
-			int s1o = s1;// + table->offset;
-
-			printf("Table: %d Max Freq: %f Req Freq: %f Increment: %f Km: %d Tlen: %d Pos: %f S0o: %d S1o: %d\n", t, table->max_freq, voice->freq, incr, km, table->len, pos, so, s1o);
-			double linear_interp = (table->data[s1o]-table->data[so])*frac + table->data[so];
-
-			float amp = 1.0/NUM_VOICES;
-			float v = amp * linear_interp;
-
-			float time = voice->phasor/voice->freq;
-			//v = amp*sawf_8ve(voice->phasor, voice->freq, sample_rate);
-
-			// v = sawf(w_c*t+A_v*sinf(w_v*t));
-	
-			// printf("%f\n", v);
-
-			l_out[n] += v;
-			r_out[n] += v;
-
-			voice->phasor += phase_inc;	
-			if (voice->phasor >= 1.0) {
-				voice->phasor -= 1.0;
-			}
-		}
-#endif
 
 	}
 }
@@ -1601,20 +1136,6 @@ static void def_sub_free(void *instance)
 static void def_sub_write(int size, uint8_t *data)
 {
 }
-
-/* IDEA: Config audio params on the sysout node editor? */
-/*
-AudioDef def_sysout = {
-    .name = "SysOut",
-    .num_controls = 0,
-    .make = def_disabled_make,
-    .init = def_disabled_init,
-    .eval = def_copy_io_eval,
-    .free = def_disabled_free,
-    .read = def_disabled_read,
-    .write = def_disabled_write,
-};
-*/
 
 AudioDef def_disabled = {
     .name = "Disabled",
@@ -1649,17 +1170,3 @@ AudioDef def_sub = {
 	.read = def_disabled_read,
 	.write = def_sub_write
 };
-
-/* IDEA: Config audio params on the sysout node editor? */
-/*
-AudioDef def_sysout = {
-    .name = "SysOut",
-    .num_controls = 0,
-    .make = def_disabled_make,
-    .init = def_disabled_init,
-    .eval = def_copy_io_eval,
-    .free = def_disabled_free,
-    .read = def_disabled_read,
-    .write = def_disabled_write,
-};
-*/

@@ -557,7 +557,8 @@ engine_note_off(Engine *engine, int node, int note, int time)
 }
 
 void
-engine_node_cc(Engine *engine, int node, int param, int value, int time)
+engine_node_cc(Engine *engine, int node, int param, union param_data value, 
+int time)
 {
     RtNodeMsg msg;
     msg.type = CC;
