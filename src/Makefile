@@ -2,11 +2,11 @@ CC := ccache gcc
 CFLAGS_REL := -std=c99 -Wall -pthread -Ofast -ffast-math -march=native -mtune=native -g
 CFLAGS_DBG := -std=c99 -Wall -pthread -O0 -g 
 
-CFLAGS := $(CFLAGS_REL) $(shell sdl2-config --cflags) 
+CFLAGS := $(CFLAGS_REL) -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable $(shell sdl2-config --cflags) 
 
 LDLIBS := -lm -ljack $(shell sdl2-config --libs)
 
-OBJS := bitset.o lfqueue.o engine.o nodes.o song.o sdl_main.o autil_c.o wave_table.o blep.o
+OBJS := bitset.o lfqueue.o engine.o nodes.o song.o sdl_main.o autil_c.o
 
 .PHONY: clean test
 

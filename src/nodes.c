@@ -24,15 +24,10 @@
 #include <assert.h>
 #include "const.h"
 #include "engine.h"
-#include "autil.h"
 #include "wave_table.h"
 #include "blep.h"
 
 #include "nodes.h"
-
-#define NUM_VOICES 8
-
-#define DPW_ORDER 6
 
 /*
     Voice Stealing:
@@ -58,39 +53,6 @@
 
     TODO: determine policies
 */
-
-struct sine_voice {
-    float freq;
-    float time;
-    int note;
-    bool on;
-};
-
-#define MAX_HARM 64
-
-struct sine {
-    /* Voice stealing using array and index as a */
-    struct sine_voice voices[NUM_VOICES];
-    /* Round robin voice stealing */
-    int voice_assign;
-    float vib_rate; /* Hz */
-    /* Remember to convert vib_depth from cents to Hz (as pitch is logarithmic) */
-    float vib_depth; /* Cents */
-
-    float trem_rate;
-    float trem_depth;
-    float atk_time;
-    float sus_level;
-    float rls_time;
-    float port_time;
-    float port_depth;
-
-    /* Additive Synth */
-    float a_freq;
-    bool a_on;
-    float a_amp[MAX_HARM];
-    float a_time;
-};
 
 static void*
 def_sine_make(int sample_rate)
@@ -403,7 +365,7 @@ def_disabled_make(int sample_rate)
 }
 
 static void
-def_disabled_init()
+def_disabled_init(union NodeData *data, int sample_rate)
 {
 }
 
@@ -412,8 +374,8 @@ def_disabled_free(void *instance)
 {
 }
 
-static void
-def_disabled_eval(void *def_data, void *instance, float *left_input, float *right_input, float *left_output, float *right_output, int len, int sample_rate, int num_msg, RtNodeMsg *msgs)
+static bool
+def_disabled_eval(void *def_data, union NodeData *instance, float *left_input, float *right_input, float *left_output, float *right_output, int len, int sample_rate, int num_msg, RtNodeMsg *msgs)
 {
     // Noise
     //memset(left_output, 0, sizeof(float)*len);
@@ -429,6 +391,7 @@ def_disabled_eval(void *def_data, void *instance, float *left_input, float *righ
         right_output[i] = r;
     }
 */
+	return false;
 }
 
 static void
@@ -440,96 +403,6 @@ static void
 def_disabled_write(int size, uint8_t *data)
 {
 }
-
-struct fm_operator {
-	float m; // freq multiple
-	ADSR adsr;
-};
-
-struct fm_voice {
-    uint8_t on;
-	uint8_t key_off;
-	uint8_t note;
-
-    float time;
-    float c_freq; 
-	float a_off;
-	float t_off;
-};
-
-struct fm {
-
-	int last_assign;
-
-    float c;
-    float m;
-
-	/* Vibrato */
-	float v_f; /* Hz */
-	float v_d; /* Cents */
-
-	/* Tremolo */
-	float tr_f; /* Hz */
-	float tr_d; /* dB */
-
-	ADSR adsr;
-
-	struct fm_voice voices[NUM_VOICES];
-	struct fm_operator ops[6];
-};
-
-struct dpw {
-	bool initialized;
-	double prev;
-};
-
-struct svf {
-	double hp_delay;
-	double bp_delay;
-	double lp_delay;
-};
-
-struct ladder {
-	double s1;
-	double s2;
-	double s3;
-	double s4;
-};
-
-struct sub_voice {
-	uint8_t on;
-	uint8_t key_off;
-	uint8_t note;
-
-	double phasor; // Normalized phase in range [0 to 1)
-
-	double time;
-	
-	float freq;
-	float a_off;
-	float t_off;
-
-	float poly_blep_fir[4];
-	double prev_dpw[DPW_ORDER];
-	bool dpw_initialized;
-	int dpw_delayed;
-	double pulse_width;
-	struct dpw dpw_d1;
-	struct dpw dpw_d2;
-	struct svf svf;
-	struct ladder ladder;
-};
-
-struct sub {
-	int last_assign;
-	double cutoff;
-	double prewarp_cutoff_g; // = tan(cutoff/(2.0*sample_rate)), Remember to update when cutoff or sample_rate changes
-	double res;
-	
-	double pwm_rate;
-	double pwm_amount;
-	struct sub_voice voices[NUM_VOICES];
-};
 
 static void*
 def_fm_make(int sample_rate)
@@ -555,16 +428,16 @@ def_fm_make(int sample_rate)
 		data->voices[i].c_freq = 0.0f;
 		data->voices[i].a_off = 0.0f;
 		data->voices[i].key_off = 0.0f;
-		data->voices[i].t_off = 0.0f;
+		// data->voices[i].t_off = 0.0f;
 	}
 	data->last_assign = 0;
 
     return data;
 }
 
-static void def_fm_eval(void *def_data, void *instance, float *l_in, float *r_in, float *l_out, float *r_out, int len, int sample_rate, int num_msg, RtNodeMsg *msgs)
+static void def_fm_eval(void *def_data, union NodeData *instance, float *l_in, float *r_in, float *l_out, float *r_out, int len, int sample_rate, int num_msg, RtNodeMsg *msgs)
 {
-    struct fm *data = instance;
+    struct fm *data = &(instance->fm);
     float p = 1.0f/(float)sample_rate;
 
     int curr_msg = 0;
@@ -614,7 +487,7 @@ static void def_fm_eval(void *def_data, void *instance, float *l_in, float *r_in
 				for (int i = 0; i < NUM_VOICES; i++) {
 					if (data->voices[i].note == msgs[curr_msg].note) {
 						data->voices[i].key_off = true;
-						data->voices[i].t_off = data->voices[i].time + n*p;
+						// data->voices[i].t_off = data->voices[i].time + n*p;
 
 						// Should NOTE_OFF turn off all notes playing that voice, or just one?
 						// break;
@@ -679,6 +552,7 @@ static void def_fm_write(int size, uint8_t *data)
 {
 }
 
+/*
 static void*
 def_sub_make(int sample_rate)
 {
@@ -713,6 +587,47 @@ def_sub_make(int sample_rate)
 	data->pwm_rate = .1f;
 	data->pwm_amount = 1.0;
     return data;
+}
+*/
+
+static void
+def_sub_init(union NodeData *node_data, int sample_rate)
+{
+	printf("Union: %d Sub: %d FM: %d\n", sizeof(*node_data), sizeof(struct sub), sizeof(struct fm));
+	struct sub *data = &(node_data->sub);
+	for (int i = 0; i < NUM_VOICES; i++) {
+		data->voices[i].phasor = 0.0f;
+		data->voices[i].on = false;
+		data->voices[i].freq = 0.0f;
+		data->voices[i].a_off = 0.0f;
+		data->voices[i].key_off = 0.0f;
+		// data->voices[i].t_off = 0.0f;
+		//memset(data->voices[i].poly_blep_fir, 0, 4*sizeof(float));
+		//data->voices[i].dpw_initialized = false;
+		/*
+		data->voices[i].svf.hp_delay = 0.0;
+		data->voices[i].svf.bp_delay = 0.0;
+		data->voices[i].svf.lp_delay = 0.0;
+		*/
+		
+		data->voices[i].ladder.s1 = 0.0f;
+		data->voices[i].ladder.s2 = 0.0f;
+		data->voices[i].ladder.s3 = 0.0f;
+		data->voices[i].ladder.s4 = 0.0f;
+
+// 		for (int o = 0; o < DPW_ORDER; o++) {
+// 			data->voices[i].prev_dpw[o] = 0.0;
+// 		}
+	}
+	data->last_assign = 0;
+	/* data->cutoff = 2.0*PI*2000; // Hz
+	data->prewarp_cutoff_g = tan(data->cutoff/(2.0*sample_rate));
+	*/
+	// Save some bytes by just storing the prewarped cutoff
+	data->prewarp_cutoff_g = tanf((PI*2000.0f)/((float)sample_rate));
+	data->res = 1;// 0.2; // For SVF, 1.0 is no resonance, 0.0 is unstable
+	data->pwm_rate = .1f;
+	data->pwm_amount = 1.0;
 }
 
 /*
@@ -765,17 +680,16 @@ def_sub_make(int sample_rate)
 	Virtual Analog Filter Algorithms:
 */
 
-long
-factorial(long a)
-{
-	long f = 1;
-	while (a >= 1) {
-		f *= a;
-		a--;
-	}
-	return f;
-}
-
+// long
+// factorial(long a)
+// {
+// 	long f = 1;
+// 	while (a >= 1) {
+// 		f *= a;
+// 		a--;
+// 	}
+// 	return f;
+// }
 
 double
 dpw_saw(struct dpw *data, double phasor, double freq, int sample_rate)
@@ -783,7 +697,7 @@ dpw_saw(struct dpw *data, double phasor, double freq, int sample_rate)
 	double dpw_P = sample_rate/freq;
 	double phase_inc = freq/sample_rate;
 
-	if (!data->initialized) {
+	if (data->prev == INFINITY) {
 		// Time travel
 		double prev_phasor = phasor - phase_inc;
 		if (prev_phasor < 0) {
@@ -794,7 +708,7 @@ dpw_saw(struct dpw *data, double phasor, double freq, int sample_rate)
 		double prev_saw2 = prev_saw*prev_saw;
 
 		data->prev = prev_saw2;
-		data->initialized = true;
+		// data->initialized = true;
 	}
 
 	double saw = 2.0*phasor - 1.0;	
@@ -824,7 +738,7 @@ dpw_tri(struct dpw *data, double phasor, double freq, int sample_rate)
 	double dpw_P = sample_rate/freq;
 	double phase_inc = freq/sample_rate;
 
-	if (!data->initialized) {
+	if (data->prev == INFINITY) {
 		// Time travel
 		double prev_phasor = phasor - phase_inc;
 		if (prev_phasor < 0) {
@@ -835,7 +749,7 @@ dpw_tri(struct dpw *data, double phasor, double freq, int sample_rate)
 		double prev_tri_i = prev_saw*fabs(prev_saw) - prev_saw;
 
 		data->prev = prev_tri_i;
-		data->initialized = true;
+		//data->initialized = true;
 	}
 
 	double saw = 2.0*phasor - 1.0;	
@@ -904,9 +818,9 @@ fast_tanh(double x)
 	return f;
 }
 
-static void def_sub_eval(void *def_data, void *instance, float *l_in, float *r_in, float *l_out, float *r_out, int len, int sample_rate, int num_msg, RtNodeMsg *msgs)
+static bool def_sub_eval(void *def_data, union NodeData *instance, float *l_in, float *r_in, float *l_out, float *r_out, int len, int sample_rate, int num_msg, RtNodeMsg *msgs)
 {
-    struct sub *data = instance;
+    struct sub *data = &(instance->sub);
     float p = 1.0f/(float)sample_rate;
 
     int curr_msg = 0;
@@ -953,19 +867,21 @@ static void def_sub_eval(void *def_data, void *instance, float *l_in, float *r_i
 				voice->phasor = 0.0f;
 				voice->pulse_width = 0.0f;
 				voice->note = msgs[curr_msg].note;
-				memset(voice->poly_blep_fir, 0, 4*sizeof(float));
-				for (int o = 0; o < DPW_ORDER; o++) {
-					voice->prev_dpw[o] = 0;
-				}
-				voice->dpw_initialized = false;
+// 				memset(voice->poly_blep_fir, 0, 4*sizeof(float));
+// 				for (int o = 0; o < DPW_ORDER; o++) {
+// 					voice->prev_dpw[o] = 0;
+// 				}
+// 				voice->dpw_initialized = false;
 
-				voice->dpw_d1.initialized = false;
-				voice->dpw_d2.initialized = false;
-				voice->dpw_d1.prev = 0.0;
-				voice->dpw_d2.prev = 0.0;
+				// voice->dpw_d1.initialized = false;
+				// voice->dpw_d2.initialized = false;
+				voice->dpw_d1.prev = INFINITY;
+				voice->dpw_d2.prev = INFINITY;
+				/*
 				voice->svf.hp_delay = 0.0;
 				voice->svf.bp_delay = 0.0;
 				voice->svf.lp_delay = 0.0;
+				*/
 				voice->ladder.s1 = 0.0;
 				voice->ladder.s2 = 0.0;
 				voice->ladder.s3 = 0.0;
@@ -976,11 +892,11 @@ static void def_sub_eval(void *def_data, void *instance, float *l_in, float *r_i
 					if (data->voices[i].note == msgs[curr_msg].note) {
 						data->voices[i].key_off = true;
 						data->voices[i].on = false;
-						data->voices[i].dpw_initialized = false;
-						data->voices[i].dpw_d1.initialized = false;
-						data->voices[i].dpw_d2.initialized = false;
-						data->voices[i].dpw_d1.prev = 0.0;
-						data->voices[i].dpw_d2.prev = 0.0;
+// 						data->voices[i].dpw_initialized = false;
+//						data->voices[i].dpw_d1.initialized = false;
+//						data->voices[i].dpw_d2.initialized = false;
+						data->voices[i].dpw_d1.prev = INFINITY;
+						data->voices[i].dpw_d2.prev = INFINITY;
 						// data->voices[i].t_off = data->voices[i].phase + n*p;
 						// TODO: get amp envelope working w/ phase
 
@@ -994,9 +910,9 @@ static void def_sub_eval(void *def_data, void *instance, float *l_in, float *r_i
 				}
 				else*/ if (msgs[curr_msg].param == SUB_CUTOFF) {
 					float new_cutoff = msgs[curr_msg].value.f32;
-					data->cutoff = 2.0*PI*new_cutoff; // Hz
+					//float cutoff = 2.0*PI*new_cutoff; // Hz
 					data->prewarp_cutoff_g = 
-						tan(data->cutoff/(2.0*sample_rate));
+						tanf((PI*new_cutoff)/((float)sample_rate));
 				}
 				else if (msgs[curr_msg].param == SUB_RES) {
 					float new_res = msgs[curr_msg].value.f32;
@@ -1127,6 +1043,8 @@ static void def_sub_eval(void *def_data, void *instance, float *l_in, float *r_i
 	}
 
 	}
+	
+	return true;
 }
 
 static void def_sub_free(void *instance)
@@ -1140,7 +1058,6 @@ static void def_sub_write(int size, uint8_t *data)
 AudioDef def_disabled = {
     .name = "Disabled",
     .num_controls = 0,
-    .make = def_disabled_make,
     .init = def_disabled_init,
     .eval = def_disabled_eval,
     .free = def_disabled_free,
@@ -1151,20 +1068,18 @@ AudioDef def_disabled = {
 AudioDef def_fm = {
     .name = "FM",
     .num_controls = 0,
-    .make = def_fm_make,
     .init = def_disabled_init,
-    .eval = def_fm_eval,
-    .free = def_fm_free,
-    .read = def_fm_read,
-    .write = def_fm_write,
+    .eval = def_disabled_eval,
+    .free = def_disabled_free,
+    .read = def_disabled_read,
+    .write = def_disabled_write,
 };
 
 AudioDef def_sub = {
 	.name = "Subtractive",
 	.data = &G_BLEP,
 	.num_controls = 0,
-	.make = def_sub_make,
-	.init = def_disabled_init,
+	.init = def_sub_init,
 	.eval = def_sub_eval,
 	.free = def_sub_free,
 	.read = def_disabled_read,

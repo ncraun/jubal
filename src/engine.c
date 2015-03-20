@@ -28,7 +28,7 @@
 #include "engine.h"
 #include "lfqueue.h"
 #include "bitset.h"
-#include "nodes.h"
+#include "node_defs.h"
 #include "autil.h"
 #include "wave_table.h"
 
@@ -50,7 +50,7 @@ make_engine(int num_nodes, int buffer_size, int queue_size, int sample_rate)
     engine->rt.nodes = malloc(sizeof(AudioNode)*num_nodes);
     for (int i = 0; i < num_nodes; i++) {
         engine->rt.nodes[i].def = 0;
-        engine->rt.nodes[i].data = NULL;
+        // engine->rt.nodes[i].data = NULL;
     }
 
     engine->non_rt.route = malloc(num_nodes*BITSET_BYTES(num_nodes));
@@ -112,11 +112,13 @@ make_engine(int num_nodes, int buffer_size, int queue_size, int sample_rate)
 void
 engine_free(Engine *engine)
 {
+	/*
     for (int i = 0; i < engine->rt.num_nodes; i++) {
         AudioNode *curr = &(engine->rt.nodes[i]);
         AudioDef *curr_def = engine->rt.defs[curr->def];
         curr_def->free(curr->data);
     }
+    */
 
     free_lfqueue(engine->imm_q);
     free_lfqueue(engine->seq_q);
@@ -343,17 +345,11 @@ jubal_callback(AuBuff out, unsigned long frames, Engine *engine, unsigned long s
 
         int new_def = tmp_msg.new_def;
         int node = tmp_msg.node;
-        void *new_instance = tmp_msg.new_instance;
-        void *old_instance = engine->rt.nodes[node].data;
-        int old_def = engine->rt.nodes[node].def;
 
         engine->rt.nodes[node].def = new_def;
-        engine->rt.nodes[node].data = new_instance;
-
-        FreeMsg fi;
-        fi.data = old_instance;
-        fi.free = engine->rt.defs[old_def]->free;
-        lfqueue_add(engine->free_q, &fi);
+		AudioDef *curr_def = engine->rt.defs[new_def];
+		
+		curr_def->init(&engine->rt.nodes[node].data, engine->rt.sample_rate);
     }
 
     while (lfqueue_size(engine->imm_q) > 0) {
@@ -430,22 +426,23 @@ jubal_callback(AuBuff out, unsigned long frames, Engine *engine, unsigned long s
 		memset(curr_left_output, 0, engine->rt.buffer_size*sizeof(float));
 		memset(curr_right_output, 0, engine->rt.buffer_size*sizeof(float));
 		// printf("Calling eval for node %d\n", node);
-        curr_def->eval(curr_def->data, curr->data, curr_left_input, curr_right_input, curr_left_output, curr_right_output, frames, engine->rt.sample_rate, engine->rt.mailbox_size[node], engine->rt.mailbox+node*engine->rt.queue_size);
+        bool has_output = curr_def->eval(curr_def->data, &curr->data, curr_left_input, curr_right_input, curr_left_output, curr_right_output, frames, engine->rt.sample_rate, engine->rt.mailbox_size[node], engine->rt.mailbox+node*engine->rt.queue_size);
 
-        /* Mix Evaulated node into its outputs */
+		if (has_output) {
+	        /* Mix Evaulated node into its outputs */
+    	    int next = bitset_next_set_bit(engine->non_rt.connected_outputs+i*BITSET_SIZE(engine->rt.num_nodes), 0, engine->rt.num_nodes);
+        	while (next >= 0) {
+        	    float *next_left_input = au_buffer(engine->rt.audio_buffer, next, engine->rt.buffer_size, L_IN);
+            	float *next_right_input = au_buffer(engine->rt.audio_buffer, next, engine->rt.buffer_size, R_IN);
+            	/* Mix node's output to all other nodes that have the current node as an input. */
+	            // 2 channels for stereo
+    	        // Could benefit from sse2
+        	    // Mix curr_l/r output into next_l/r input
+            	mix_scale_stereo(curr_left_output, curr_right_output, 1.0f, next_left_input, next_right_input, frames);
 
-        int next = bitset_next_set_bit(engine->non_rt.connected_outputs+i*BITSET_SIZE(engine->rt.num_nodes), 0, engine->rt.num_nodes);
-        while (next >= 0) {
-            float *next_left_input = au_buffer(engine->rt.audio_buffer, next, engine->rt.buffer_size, L_IN);
-            float *next_right_input = au_buffer(engine->rt.audio_buffer, next, engine->rt.buffer_size, R_IN);
-            /* Mix node's output to all other nodes that have the current node as an input. */
-            // 2 channels for stereo
-            // Could benefit from sse2
-            // Mix curr_l/r output into next_l/r input
-            mix_scale_stereo(curr_left_output, curr_right_output, 1.0f, next_left_input, next_right_input, frames);
-
-            next = bitset_next_set_bit(engine->non_rt.connected_outputs+i*BITSET_SIZE(engine->rt.num_nodes), next, engine->rt.num_nodes);
-        }
+	            next = bitset_next_set_bit(engine->non_rt.connected_outputs+i*BITSET_SIZE(engine->rt.num_nodes), next, engine->rt.num_nodes);
+    	    }
+		}
 		// printf("Evaluated Node: %d\n", node);
     }
     /* All Nodes have been evaluated. Mix the connected ones into the system output. */
@@ -501,7 +498,7 @@ engine_change_sample_rate(Engine *engine, int sample_rate)
     msg.new_sample_rate = sample_rate;
 
 /* TODO: A better way of refilling the wavetables when samplerate changes. */
-	fill_saw_wave_table(&G_SAW_TABLE, sample_rate);
+	// fill_saw_wave_table(&G_SAW_TABLE, sample_rate);
     lfqueue_add(engine->sys_q, &msg);
 }
 
@@ -577,7 +574,7 @@ engine_change_node_def(Engine *engine, int node, int def)
     RtDefMsg msg;
     msg.node = node;
     msg.new_def = def;
-    msg.new_instance = engine->rt.defs[def]->make(engine->rt.sample_rate);
+    //msg.new_instance = engine->rt.defs[def]->make(engine->rt.sample_rate);
 
     lfqueue_add(engine->def_q, &msg);
 }

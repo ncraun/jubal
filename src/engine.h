@@ -20,6 +20,7 @@
 #ifndef JUBAL_ENGINE_H
 #define JUBAL_ENGINE_H
 #include "lfqueue.h"
+#include "nodes.h"
 
 enum DataType { F32, S32, U32 };
 union param_data {
@@ -27,8 +28,6 @@ union param_data {
 	int32_t s32;
 	uint32_t u32;
 };
-
-
 
 enum Au_BufferType {L_IN=0, R_IN=1, L_OUT=2, R_OUT=3};
 
@@ -50,13 +49,9 @@ struct FreeMsg {
 typedef struct FreeMsg FreeMsg;
 
 struct AudioNode {
-    uint8_t def;
-    /* Instance param block */
-	void *params;
-    //void *pdef;
-    void *data;
+	uint8_t def;
+	union NodeData data;
 };
-
 typedef struct AudioNode AudioNode;
 
 
@@ -76,7 +71,6 @@ struct RtNodeMsg {
 
 typedef struct RtNodeMsg RtNodeMsg;
 
-
 enum RtSysMsgType {CHANGE_SAMPLE_RATE, CHANGE_BUFFER_SIZE, CHANGE_NUM_NODES};
 
 struct RtSysMsg {
@@ -90,7 +84,7 @@ struct RtSysMsg {
     int new_sample_rate;
 
     /* Change Num Nodes Data */
-    AudioNode *new_nodes;
+    // AudioNode *new_nodes;
     uint32_t *new_route;
     int new_num_nodes;
     uint32_t *new_seen;
@@ -143,9 +137,10 @@ struct AudioDef {
     uint8_t param_types; // type tags
 
     /* Interface */
-    void* (*make)(int sample_rate);
-    void (*init)(void);
-    void (*eval)(void *def_data, void *instance, float* left_input, float *right_input, float *left_output, float *right_output, int len, int sample_rate, int num_msg, RtNodeMsg* msgs);
+    //void* (*make)(int sample_rate);
+    void (*init)(union NodeData *data, int sample_rate);
+	/* Return false if no audio was produced */
+    bool (*eval)(void *def_data, union NodeData *instance, float* left_input, float *right_input, float *left_output, float *right_output, int len, int sample_rate, int num_msg, RtNodeMsg* msgs);
     void (*free)(void *instance);
 
     void (*read)(int size, uint8_t *data);
